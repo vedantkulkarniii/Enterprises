@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: enterprise-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: enterprise_platform_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enterprise-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: enterprise-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enterprise-network
+
+  # Backend NestJS API
+  api:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: enterprise-api
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_platform_dev
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-key-change-in-production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/backend/src:/app/src
+    command: npm run dev
+    networks:
+      - enterprise-network
+
+  # Frontend React App
+  web:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: enterprise-web
+    environment:
+      VITE_API_URL: http://localhost:3000/api
+    ports:
+      - "3001:3001"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/frontend/src:/app/src
+    command: npm run dev
+    networks:
+      - enterprise-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  enterprise-network:
+    driver: bridge

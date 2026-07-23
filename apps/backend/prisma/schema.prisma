@@ -1,0 +1,564 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE ENTITIES
+// ============================================================================
+
+/// User model - Represents all system users across all organizations
+model User {
+  id                    String   @id @default(uuid()) @db.Uuid
+  email                 String   @unique @db.VarChar(255)
+  password              String?  @db.VarChar(255)
+  firstName             String   @db.VarChar(100)
+  lastName              String   @db.VarChar(100)
+  phone                 String?  @db.VarChar(20)
+  avatarUrl             String?  @db.VarChar(500)
+  
+  // Status flags
+  isActive              Boolean  @default(true)
+  isEmailVerified       Boolean  @default(false)
+  isPhoneVerified       Boolean  @default(false)
+  
+  // MFA
+  mfaEnabled            Boolean  @default(false)
+  mfaSecret             String?  @db.VarChar(255)
+  mfaBackupCodes        String?  @db.Text // JSON array
+  
+  // Last login
+  lastLoginAt           DateTime?
+  lastLoginIp           String?  @db.VarChar(45)
+  
+  // Audit fields
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  createdBy             String?  @db.Uuid
+  updatedBy             String?  @db.Uuid
+  isDeleted             Boolean  @default(false)
+  deletedAt             DateTime?
+  
+  // Relations
+  userRoles             UserRole[]
+  organizations         OrganizationMember[]
+  userSessions          UserSession[]
+  auditLogs             AuditLog[]
+  notifications         Notification[]
+  activities            ActivityLog[]
+  refreshTokens         RefreshToken[]
+  departments           Department[] @relation("DepartmentHead")
+  divisions             BusinessDivision[] @relation("DivisionHead")
+  createdProjects       Project[] @relation("ProjectOwner")
+  assignedTasks         Task[] @relation("TaskAssignee")
+  createdTasks          Task[] @relation("TaskCreator")
+
+  @@index([email])
+  @@index([isDeleted])
+  @@index([isActive])
+  @@index([organizationId])
+  @@map("users")
+}
+
+/// Organization model - Represents companies in the platform
+model Organization {
+  id                    String   @id @default(uuid()) @db.Uuid
+  name                  String   @db.VarChar(255)
+  slug                  String   @unique @db.VarChar(255)
+  description           String?  @db.Text
+  logoUrl               String?  @db.VarChar(500)
+  website               String?  @db.VarChar(500)
+  
+  // Company info
+  industry              String?  @db.VarChar(100)
+  companySize           String?  @db.VarChar(50)
+  country               String?  @db.VarChar(100)
+  city                  String?  @db.VarChar(100)
+  address               String?  @db.VarChar(500)
+  phone                 String?  @db.VarChar(20)
+  
+  // Subscription
+  subscriptionTier      SubscriptionTier @default(STARTER)
+  maxUsers              Int      @default(10)
+  maxStorage            BigInt   @default(5368709120) // 5GB in bytes
+  
+  // Status
+  isActive              Boolean  @default(true)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  createdBy             String?  @db.Uuid
+  updatedBy             String?  @db.Uuid
+  isDeleted             Boolean  @default(false)
+  deletedAt             DateTime?
+  
+  // Relations
+  members               OrganizationMember[]
+  roles                 Role[]
+  departments           Department[]
+  divisions             BusinessDivision[]
+  projects              Project[]
+  tasks                 Task[]
+  auditLogs             AuditLog[]
+  activities            ActivityLog[]
+  notifications         Notification[]
+  
+  @@unique([slug])
+  @@index([isDeleted])
+  @@index([isActive])
+  @@map("organizations")
+}
+
+/// OrganizationMember - Links users to organizations with their membership
+model OrganizationMember {
+  id                    String   @id @default(uuid()) @db.Uuid
+  userId                String   @db.Uuid
+  organizationId        String   @db.Uuid
+  
+  // Member status
+  joinedAt              DateTime @default(now())
+  role                  MemberRole @default(MEMBER)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("organization_members")
+}
+
+/// Role - RBAC roles within an organization
+model Role {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String?  @db.Uuid
+  name                  String   @db.VarChar(100)
+  description           String?  @db.Text
+  
+  // Permissions stored as JSON array
+  permissions           String   @db.Text // JSON array of permission strings
+  
+  // Type
+  isSystemRole          Boolean  @default(false)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  isDeleted             Boolean  @default(false)
+  
+  // Relations
+  organization          Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userRoles             UserRole[]
+  
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([isSystemRole])
+  @@map("roles")
+}
+
+/// UserRole - Many-to-many relationship between users and roles
+model UserRole {
+  id                    String   @id @default(uuid()) @db.Uuid
+  userId                String   @db.Uuid
+  roleId                String   @db.Uuid
+  organizationId        String   @db.Uuid
+  
+  // Assignment details
+  assignedAt            DateTime @default(now())
+  assignedBy            String?  @db.Uuid
+  expiresAt             DateTime?
+  
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role                  Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, roleId, organizationId])
+  @@index([userId])
+  @@index([roleId])
+  @@index([organizationId])
+  @@map("user_roles")
+}
+
+/// Department - Organizational departments
+model Department {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  name                  String   @db.VarChar(255)
+  code                  String   @db.VarChar(50)
+  description           String?  @db.Text
+  headId                String?  @db.Uuid
+  
+  // Hierarchy
+  parentDepartmentId    String?  @db.Uuid
+  
+  // Status
+  isActive              Boolean  @default(true)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  head                  User?    @relation("DepartmentHead", fields: [headId], references: [id], onDelete: SetNull)
+  parentDepartment      Department? @relation("DepartmentHierarchy", fields: [parentDepartmentId], references: [id], onDelete: SetNull)
+  subDepartments        Department[] @relation("DepartmentHierarchy")
+  
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@index([headId])
+  @@map("departments")
+}
+
+/// BusinessDivision - Business lines (Creative Studio, Architecture, Tech, etc.)
+model BusinessDivision {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  name                  String   @db.VarChar(255)
+  description           String?  @db.Text
+  headId                String?  @db.Uuid
+  divisionType          DivisionType
+  
+  // Status
+  isActive              Boolean  @default(true)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  head                  User?    @relation("DivisionHead", fields: [headId], references: [id], onDelete: SetNull)
+  
+  @@unique([organizationId, divisionType])
+  @@index([organizationId])
+  @@map("business_divisions")
+}
+
+/// UserSession - Tracks active user sessions
+model UserSession {
+  id                    String   @id @default(uuid()) @db.Uuid
+  userId                String   @db.Uuid
+  
+  // Session details
+  ipAddress             String?  @db.VarChar(45)
+  userAgent             String?  @db.Text
+  deviceName            String?  @db.VarChar(255)
+  
+  // Status
+  isActive              Boolean  @default(true)
+  
+  // Timing
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  expiresAt             DateTime
+  lastActivityAt        DateTime @default(now()) @db.Timestamp(6)
+  
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([isActive])
+  @@map("user_sessions")
+}
+
+/// RefreshToken - Stores refresh tokens for JWT
+model RefreshToken {
+  id                    String   @id @default(uuid()) @db.Uuid
+  userId                String   @db.Uuid
+  token                 String   @unique @db.Text
+  
+  // Status
+  isRevoked             Boolean  @default(false)
+  
+  // Timing
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  expiresAt             DateTime
+  revokedAt             DateTime?
+  
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+// AUDIT & LOGGING
+// ============================================================================
+
+/// AuditLog - Complete audit trail of all system actions
+model AuditLog {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  userId                String?  @db.Uuid
+  
+  // What was done
+  entityType            String   @db.VarChar(100)
+  entityId              String   @db.Uuid
+  action                AuditAction
+  
+  // Changes
+  changes               String?  @db.Text // JSON of before/after
+  
+  // Request context
+  ipAddress             String?  @db.VarChar(45)
+  userAgent             String?  @db.Text
+  
+  // Timing
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([organizationId])
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// ActivityLog - User activity tracking for dashboards
+model ActivityLog {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  userId                String?  @db.Uuid
+  
+  // Activity details
+  activityType          String   @db.VarChar(100)
+  description           String   @db.Text
+  metadata              String?  @db.Text // JSON
+  
+  // Timing
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([organizationId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+/// Notification - User notifications
+model Notification {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  userId                String   @db.Uuid
+  
+  // Content
+  title                 String   @db.VarChar(255)
+  message               String   @db.Text
+  type                  NotificationType
+  priority              NotificationPriority @default(NORMAL)
+  
+  // Status
+  status                NotificationStatus @default(UNREAD)
+  
+  // Metadata
+  metadata              String?  @db.Text // JSON
+  actionUrl             String?  @db.VarChar(500)
+  
+  // Timing
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  readAt                DateTime?
+  sentAt                DateTime?
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ============================================================================
+// PROJECT MANAGEMENT
+// ============================================================================
+
+/// Project - Project management
+model Project {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  ownerId               String   @db.Uuid
+  
+  // Project details
+  name                  String   @db.VarChar(255)
+  description           String?  @db.Text
+  status                ProjectStatus @default(PLANNING)
+  
+  // Dates
+  startDate             DateTime?
+  endDate               DateTime?
+  
+  // Budget
+  budget                Decimal  @default(0) @db.Decimal(15, 2)
+  spent                 Decimal  @default(0) @db.Decimal(15, 2)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  isDeleted             Boolean  @default(false)
+  
+  // Relations
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner                 User     @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  tasks                 Task[]
+  
+  @@index([organizationId])
+  @@index([ownerId])
+  @@index([status])
+  @@map("projects")
+}
+
+/// Task - Task management
+model Task {
+  id                    String   @id @default(uuid()) @db.Uuid
+  projectId             String   @db.Uuid
+  organizationId        String   @db.Uuid
+  
+  // Task details
+  title                 String   @db.VarChar(255)
+  description           String?  @db.Text
+  status                TaskStatus @default(TODO)
+  priority              TaskPriority @default(MEDIUM)
+  
+  // Assignment
+  assignedToId          String?  @db.Uuid
+  createdById           String   @db.Uuid
+  
+  // Dates
+  dueDate               DateTime?
+  estimatedHours        Decimal? @db.Decimal(8, 2)
+  actualHours           Decimal? @db.Decimal(8, 2)
+  
+  // Audit
+  createdAt             DateTime @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime @updatedAt @db.Timestamp(6)
+  isDeleted             Boolean  @default(false)
+  
+  // Relations
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedTo            User?    @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdBy             User     @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([assignedToId])
+  @@map("tasks")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum SubscriptionTier {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+  CUSTOM
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+  GUEST
+}
+
+enum DivisionType {
+  CREATIVE_STUDIO
+  ARCHITECTURE_CONSTRUCTION
+  TECHNOLOGY_AI
+  CORPORATE_INTELLIGENCE
+  RETAIL_COMMERCE
+  ACADEMY
+  FREELANCE_MARKETPLACE
+}
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  EXPORT
+  IMPORT
+  EXPORT_REPORT
+}
+
+enum NotificationType {
+  SYSTEM
+  ALERT
+  INFO
+  WARNING
+  ERROR
+  SUCCESS
+  TASK_ASSIGNMENT
+  APPROVAL_REQUEST
+  DEADLINE_REMINDER
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+  ARCHIVED
+  DELETED
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
